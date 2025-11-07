@@ -3,7 +3,7 @@ import json
 import streamlit as st
 import google.generativeai as genai
 
-GEMINI_MODEL = "gemini-1.0-pro"
+GEMINI_MODEL = "gemini-1.5-flash"
 
 def get_gemini_api_key() -> str:
     # Prefer Streamlit secrets in the cloud, fallback to env for local dev
@@ -25,12 +25,22 @@ def call_gemini(note: str) -> dict:
         "pupils (equal|unequal|unknown), hypothermia (yes|no), burns (yes|no).\n"
         "Return ONLY valid JSON; no extra text."
     )
-    model = genai.GenerativeModel(
-        GEMINI_MODEL,
-        generation_config={"temperature": 0, "response_mime_type": "application/json"}
-    )
-    resp = model.generate_content([sys_prompt, f"Scenario: {note}"])
-    return json.loads(resp.text)
+
+    for model_name in ( "gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro" ):
+        try:
+            model = genai.GenerativeModel(
+                model_name,
+                generation_config={"temperature": 0, "response_mime_type": "application/json"}
+            )
+            resp = model.generate_content([sys_prompt, f"Scenario: {note}"])
+            return json.loads(resp.text)
+        except Exception as e:
+            # Try the next model
+            last_err = e
+            continue
+    # If all tried models failed:
+    raise RuntimeError(f"Gemini call failed. Last error: {last_err}")
+
 
 def normalize(d: dict) -> dict:
     def pick(x, allowed, default):
