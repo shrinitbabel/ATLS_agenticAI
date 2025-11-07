@@ -3,7 +3,7 @@ import json
 import streamlit as st
 import google.generativeai as genai
 
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-1.0-pro"
 
 def get_gemini_api_key() -> str:
     # Prefer Streamlit secrets in the cloud, fallback to env for local dev
