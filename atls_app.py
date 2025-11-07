@@ -1,21 +1,36 @@
 import os
 import json
+import re
 import streamlit as st
 import google.generativeai as genai
 
-GEMINI_MODEL = "gemini-1.5-flash"
+# --------------------------
+# MODEL TRY-ORDER (newest -> older)
+# --------------------------
+MODEL_CANDIDATES = (
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.0-pro",
+    "gemini-pro",
+)
 
 def get_gemini_api_key() -> str:
-    # Prefer Streamlit secrets in the cloud, fallback to env for local dev
     if "GOOGLE_API_KEY" in st.secrets:
         return st.secrets["GOOGLE_API_KEY"]
     return os.getenv("GOOGLE_API_KEY", "")
 
-def call_gemini(note: str) -> dict:
+def configure_genai():
     api_key = get_gemini_api_key()
     if not api_key:
         raise RuntimeError("No Gemini API key found. Set st.secrets['GOOGLE_API_KEY'] or env var GOOGLE_API_KEY.")
-    genai.configure(api_key=api_key)
+    # *** FORCE v1 ENDPOINT (fixes the v1beta 404s) ***
+    genai.configure(
+        api_key=api_key,
+        api_endpoint="https://generativelanguage.googleapis.com/v1"
+    )
+
+def call_gemini(note: str) -> dict:
+    configure_genai()
 
     sys_prompt = (
         "Convert this trauma scenario note into JSON with exactly these fields:\n"
@@ -26,7 +41,8 @@ def call_gemini(note: str) -> dict:
         "Return ONLY valid JSON; no extra text."
     )
 
-    for model_name in ( "gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro" ):
+    last_err = None
+    for model_name in MODEL_CANDIDATES:
         try:
             model = genai.GenerativeModel(
                 model_name,
@@ -35,16 +51,46 @@ def call_gemini(note: str) -> dict:
             resp = model.generate_content([sys_prompt, f"Scenario: {note}"])
             return json.loads(resp.text)
         except Exception as e:
-            # Try the next model
             last_err = e
             continue
-    # If all tried models failed:
     raise RuntimeError(f"Gemini call failed. Last error: {last_err}")
 
+# --------------------------
+# Minimal regex fallback if LLM fails (keeps the app usable)
+# --------------------------
+def regex_extract(note: str) -> dict:
+    t = note.lower()
+    def yesif(pat): return "yes" if re.search(pat, t) else "no"
+    airway = "unknown"
+    if re.search(r'\bobstruct|snoring|gurgling|stridor', t): airway = "obstructed"
+    elif re.search(r'vomit|blood in airway|facial fracture|soot|burn airway', t): airway = "compromised"
+    cspine = "yes" if re.search(r'c[-\s]?spine|cervical|midline neck tender|high[-\s]?speed|mvc|mva|fall|dive', t) else "unknown"
+    sbp = 120
+    m = re.search(r'\bsbp\s*[:=]?\s*(\d+)', t) or re.search(r'\bbp\s*[:=]?\s*(\d+)\s*/', t)
+    if m: sbp = int(m.group(1))
+    gcs = 15
+    m = re.search(r'\bgcs\s*[:=]?\s*(\d+)', t)
+    if m: gcs = max(3, min(15, int(m.group(1))))
+    pupils = "unequal" if re.search(r'blown pupil|unequal pupils|anisocoria', t) else "equal"
+
+    return {
+        "airway": airway,
+        "cspine": cspine,
+        "tension_ptx": yesif(r'tension pneumo|tracheal deviation|absent (left|right) breath'),
+        "open_ptx": yesif(r'sucking chest wound|open pneumothorax'),
+        "flail": yesif(r'flail chest|paradoxical'),
+        "resp_distress": yesif(r'respiratory distress|increased work|accessory muscles|tachypnea'),
+        "sbp": sbp,
+        "ext_bleed": yesif(r'external (bleed|hemorrhage)|spurting|pooling blood|amputation'),
+        "pelvic_unstable": yesif(r'pelvic (instab|unstab|tender|crepitus)|pelvis unstable'),
+        "gcs": gcs,
+        "pupils": pupils,
+        "hypothermia": yesif(r'hypotherm|cold|temp\s*(3[0-4])'),
+        "burns": yesif(r'\bburn(s)?\b|inhalation injury'),
+    }
 
 def normalize(d: dict) -> dict:
-    def pick(x, allowed, default):
-        return x if x in allowed else default
+    def pick(x, allowed, default): return x if x in allowed else default
     out = {
         "airway": pick(d.get("airway","unknown"), {"patent","obstructed","compromised","unknown"}, "unknown"),
         "cspine": pick(d.get("cspine","unknown"), {"yes","no","unknown"}, "unknown"),
@@ -60,7 +106,6 @@ def normalize(d: dict) -> dict:
         "hypothermia": pick(d.get("hypothermia","no"), {"yes","no"}, "no"),
         "burns": pick(d.get("burns","no"), {"yes","no"}, "no"),
     }
-    # Heuristic: GCS <= 8 with unknown airway → mark compromised (ATLS teaching)
     if out["airway"] == "unknown" and out["gcs"] <= 8:
         out["airway"] = "compromised"
     return out
