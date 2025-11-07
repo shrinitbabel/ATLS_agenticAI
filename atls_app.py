@@ -3,18 +3,20 @@ import json
 import streamlit as st
 import google.generativeai as genai
 
-# -------------------------------
-# Gemini extraction (ATLS fields)
-# -------------------------------
 GEMINI_MODEL = "gemini-1.5-flash"
 
+def get_gemini_api_key() -> str:
+    # Prefer Streamlit secrets in the cloud, fallback to env for local dev
+    if "GOOGLE_API_KEY" in st.secrets:
+        return st.secrets["GOOGLE_API_KEY"]
+    return os.getenv("GOOGLE_API_KEY", "")
+
 def call_gemini(note: str) -> dict:
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = get_gemini_api_key()
     if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY not set")
+        raise RuntimeError("No Gemini API key found. Set st.secrets['GOOGLE_API_KEY'] or env var GOOGLE_API_KEY.")
     genai.configure(api_key=api_key)
 
-    # Ask for strict JSON (no commentary)
     sys_prompt = (
         "Convert this trauma scenario note into JSON with exactly these fields:\n"
         "airway (patent|obstructed|compromised|unknown), cspine (yes|no|unknown), "
