@@ -23,11 +23,8 @@ def configure_genai():
     api_key = get_gemini_api_key()
     if not api_key:
         raise RuntimeError("No Gemini API key found. Set st.secrets['GOOGLE_API_KEY'] or env var GOOGLE_API_KEY.")
-    # *** FORCE v1 ENDPOINT (fixes the v1beta 404s) ***
-    genai.configure(
-        api_key=api_key,
-        api_endpoint="https://generativelanguage.googleapis.com/v1"
-    )
+    # No api_endpoint kwarg (not supported by your SDK)
+    genai.configure(api_key=api_key)
 
 def call_gemini(note: str) -> dict:
     configure_genai()
@@ -220,9 +217,9 @@ if st.button("Run ATLS Tutor"):
         try:
             raw = call_gemini(note)
         except Exception as e:
-            st.error(f"Gemini error: {e}")
-            st.stop()
-
+            st.warning(f"Gemini error, using local fallback: {e}")
+            raw = regex_extract(note)
+            
     facts = normalize(raw)
 
     st.subheader("Extracted Facts (normalized)")
