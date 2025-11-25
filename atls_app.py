@@ -58,25 +58,36 @@ def regex_extract(note: str) -> dict:
     t = note.lower()
     def yesif(pat): return "yes" if re.search(pat, t) else "no"
     airway = "unknown"
-    if re.search(r'\bobstruct|snoring|gurgling|stridor', t): airway = "obstructed"
-    elif re.search(r'vomit|blood in airway|facial fracture|soot|burn airway', t): airway = "compromised"
-    elif re.search(r'speaking|talking|answering', t): airway = "patent"
+    if re.search(r'\bobstruct(ed|ion)?\b|snoring|gurgling|stridor', t):
+        airway = "obstructed"
+    elif re.search(r'vomit|blood in airway|facial fracture|soot|burn airway', t):
+        airway = "compromised"
+    elif re.search(r'speaking|answering|talking', t):
+        airway = "patent"
+
     cspine = "yes" if re.search(r'c[-\s]?spine|cervical|midline neck tender|high[-\s]?speed|mvc|mva|fall|dive', t) else "unknown"
+
     sbp = 120
     m = re.search(r'\bsbp\s*[:=]?\s*(\d+)', t) or re.search(r'\bbp\s*[:=]?\s*(\d+)\s*/', t)
-    if m: sbp = int(m.group(1))
+    if m:
+        sbp = int(m.group(1))
+
     gcs = 15
     m = re.search(r'\bgcs\s*[:=]?\s*(\d+)', t)
-    if m: gcs = max(3, min(15, int(m.group(1))))
-    pupils = "unequal" if re.search(r'blown pupil|unequal pupils|anisocoria', t) else "equal"
+    if m:
+        gcs = max(3, min(15, int(m.group(1))))
+
+    pupils = "equal"
+    if re.search(r'blown pupil|unequal pupils|anisocoria', t):
+        pupils = "unequal"
 
     return {
         "airway": airway,
         "cspine": cspine,
-        "tension_ptx": yesif(r'tension pneumo|tracheal deviation|absent (left|right) breath'),
+        "tension_ptx": yesif(r'tension pneumo|tension pneumothorax|tracheal deviation|absent (left|right) breath'),
         "open_ptx": yesif(r'sucking chest wound|open pneumothorax'),
-        "flail": yesif(r'flail chest|paradoxical'),
-        "resp_distress": yesif(r'respiratory distress|increased work|accessory muscles|tachypnea'),
+        "flail": yesif(r'flail chest|paradoxical (movement|breathing)'),
+        "resp_distress": yesif(r'respiratory distress|increased work of breathing|use of accessory muscles|tachypnea|labored breathing'),
         "sbp": sbp,
         "ext_bleed": yesif(r'external (bleed|hemorrhage)|spurting|pooling blood|amputation'),
         "pelvic_unstable": yesif(r'pelvic (instab|unstab|tender|crepitus)|pelvis unstable'),
@@ -116,7 +127,6 @@ def run_atls_engine(f):
     def fire(name, why):
         actions.append((name, why))
 
-    # Start Primary Survey
     fire("PRIMARY SURVEY: Follow ABCDE with life-threats first.",
          "ATLS primary survey begins now")
 
@@ -174,7 +184,7 @@ def run_atls_engine(f):
         fire("E) HYPOTHERMIA: Remove wet clothing; warm blankets; warmed fluids/air.",
              "Hypothermia worsens coagulopathy and outcomes")
 
-    # Secondary survey vs transfer consideration
+    # Secondary survey vs transfer
     stable_for_secondary = (
         f["airway"] in {"patent", "compromised"} and
         f["tension_ptx"] == "no" and
@@ -192,9 +202,10 @@ def run_atls_engine(f):
     return actions
 
 # -----------------------------------
-# Case Base for CBR / kNN  (10 cases)
+# Case Base for CBR / kNN (10 illustrative cases)
 # -----------------------------------
 CASE_BASE = [
+    # 1 – High-speed MVC with tension PTX and shock
     {
         "id": 1,
         "label": "High-speed MVC with tension PTX and shock",
@@ -219,6 +230,7 @@ CASE_BASE = [
             "Consider transfer"
         ]
     },
+    # 2 – GSW to thigh with massive hemorrhage
     {
         "id": 2,
         "label": "GSW to thigh with massive hemorrhage",
@@ -242,6 +254,7 @@ CASE_BASE = [
             "Consider transfer"
         ]
     },
+    # 3 – Pelvic crush injury with hypotension
     {
         "id": 3,
         "label": "Pelvic crush injury with hypotension",
@@ -265,6 +278,7 @@ CASE_BASE = [
             "Consider transfer"
         ]
     },
+    # 4 – Stable blunt trauma
     {
         "id": 4,
         "label": "Stable blunt trauma",
@@ -287,9 +301,10 @@ CASE_BASE = [
             "Adjunct imaging as needed"
         ]
     },
+    # 5 – Burn + inhalation injury
     {
         "id": 5,
-        "label": "Burn + inhalation injury",
+        "label": "House fire with burns and inhalation injury",
         "airway": "compromised",
         "cspine": "unknown",
         "tension_ptx": "no",
@@ -305,20 +320,45 @@ CASE_BASE = [
         "burns": "yes",
         "actions": [
             "Early airway protection",
-            "Oxygen",
-            "Manage burns",
+            "High-flow oxygen",
+            "Burn management",
             "Prevent hypothermia"
         ]
     },
+    # 6 – Elderly fall with hypothermia
     {
         "id": 6,
-        "label": "Open pneumothorax from stab wound",
+        "label": "Elderly fall with hypothermia",
         "airway": "patent",
-        "cspine": "unknown",
+        "cspine": "yes",
         "tension_ptx": "no",
-        "open_ptx": "yes",
+        "open_ptx": "no",
         "flail": "no",
-        "resp_distress": "yes",
+        "resp_distress": "no",
+        "sbp": 110,
+        "ext_bleed": "no",
+        "pelvic_unstable": "no",
+        "gcs": 14,
+        "pupils": "equal",
+        "hypothermia": "yes",
+        "burns": "no",
+        "actions": [
+            "C-spine immobilization",
+            "Warm blankets",
+            "Warmed IV fluids",
+            "Secondary survey"
+        ]
+    },
+    # 7 – Pediatric blunt trauma, stable
+    {
+        "id": 7,
+        "label": "Pediatric blunt trauma, stable",
+        "airway": "patent",
+        "cspine": "no",
+        "tension_ptx": "no",
+        "open_ptx": "no",
+        "flail": "no",
+        "resp_distress": "no",
         "sbp": 100,
         "ext_bleed": "no",
         "pelvic_unstable": "no",
@@ -327,15 +367,15 @@ CASE_BASE = [
         "hypothermia": "no",
         "burns": "no",
         "actions": [
-            "3-sided occlusive dressing",
-            "Chest tube",
-            "Oxygen",
-            "Monitor hemodynamics"
+            "Age-appropriate vitals monitoring",
+            "Secondary survey",
+            "Observation"
         ]
     },
+    # 8 – Flail chest without hypotension
     {
-        "id": 7,
-        "label": "Flail chest from blunt trauma",
+        "id": 8,
+        "label": "Flail chest with respiratory distress",
         "airway": "patent",
         "cspine": "yes",
         "tension_ptx": "no",
@@ -345,81 +385,60 @@ CASE_BASE = [
         "sbp": 110,
         "ext_bleed": "no",
         "pelvic_unstable": "no",
-        "gcs": 14,
+        "gcs": 15,
         "pupils": "equal",
         "hypothermia": "no",
         "burns": "no",
         "actions": [
             "Analgesia",
-            "Consider positive pressure ventilation",
-            "Oxygen"
+            "Positive pressure ventilation",
+            "Evaluate for underlying lung injury"
         ]
     },
-    {
-        "id": 8,
-        "label": "Hypothermic elderly fall",
-        "airway": "patent",
-        "cspine": "unknown",
-        "tension_ptx": "no",
-        "open_ptx": "no",
-        "flail": "no",
-        "resp_distress": "no",
-        "sbp": 120,
-        "ext_bleed": "no",
-        "pelvic_unstable": "no",
-        "gcs": 15,
-        "pupils": "equal",
-        "hypothermia": "yes",
-        "burns": "no",
-        "actions": [
-            "Warm blankets",
-            "Warmed IV fluids",
-            "Prevent further heat loss"
-        ]
-    },
+    # 9 – GSW chest with open pneumothorax
     {
         "id": 9,
-        "label": "PEA arrest from tension PTX",
-        "airway": "compromised",
-        "cspine": "unknown",
-        "tension_ptx": "yes",
-        "open_ptx": "no",
-        "flail": "no",
-        "resp_distress": "yes",
-        "sbp": 60,
-        "ext_bleed": "no",
-        "pelvic_unstable": "no",
-        "gcs": 3,
-        "pupils": "unequal",
-        "hypothermia": "no",
-        "burns": "no",
-        "actions": [
-            "Immediate decompression",
-            "CPR/ALS as appropriate",
-            "Definitive airway"
-        ]
-    },
-    {
-        "id": 10,
-        "label": "Gunshot to chest with shock and open PTX",
+        "label": "GSW chest with open pneumothorax",
         "airway": "patent",
         "cspine": "unknown",
         "tension_ptx": "no",
         "open_ptx": "yes",
         "flail": "no",
         "resp_distress": "yes",
-        "sbp": 75,
-        "ext_bleed": "yes",
+        "sbp": 95,
+        "ext_bleed": "no",
         "pelvic_unstable": "no",
-        "gcs": 13,
+        "gcs": 14,
         "pupils": "equal",
         "hypothermia": "no",
         "burns": "no",
         "actions": [
-            "3-sided dressing",
+            "Three-sided occlusive dressing",
             "Chest tube",
-            "IV access + blood",
-            "Consider transfer"
+            "Monitor for shock"
+        ]
+    },
+    # 10 – Blunt head injury with unequal pupils
+    {
+        "id": 10,
+        "label": "Blunt head injury with unequal pupils",
+        "airway": "patent",
+        "cspine": "yes",
+        "tension_ptx": "no",
+        "open_ptx": "no",
+        "flail": "no",
+        "resp_distress": "no",
+        "sbp": 130,
+        "ext_bleed": "no",
+        "pelvic_unstable": "no",
+        "gcs": 10,
+        "pupils": "unequal",
+        "hypothermia": "no",
+        "burns": "no",
+        "actions": [
+            "Frequent neuro checks",
+            "Rapid CT head when stable",
+            "Avoid hypotension/hypoxia"
         ]
     }
 ]
@@ -430,20 +449,20 @@ SIM_WEIGHTS = {
     "cspine": 0.5,
     "tension_ptx": 3.0,
     "open_ptx": 3.0,
-    "flail": 1.0,
-    "resp_distress": 1.0,
+    "flail": 1.5,
+    "resp_distress": 1.5,
     "ext_bleed": 3.0,
     "pelvic_unstable": 2.0,
-    "hypothermia": 0.5,
-    "burns": 0.5,
-    "pupils": 0.5,
+    "hypothermia": 1.0,
+    "burns": 1.0,
+    "pupils": 1.0,
     "sbp": 1.0,
     "gcs": 1.0,
 }
 
-CBR_KEYS = [
+FEATURE_KEYS = [
     "airway","cspine","tension_ptx","open_ptx","flail","resp_distress",
-    "sbp","ext_bleed","pelvic_unstable","gcs","pupils","hypothermia","burns"
+    "ext_bleed","pelvic_unstable","hypothermia","burns","pupils"
 ]
 
 def case_distance(q, c):
@@ -453,9 +472,7 @@ def case_distance(q, c):
     d += SIM_WEIGHTS["gcs"] * (abs(q["gcs"] - c["gcs"]) / 15.0)
 
     # categorical mismatch penalties
-    for key in ["airway","cspine","tension_ptx","open_ptx","flail",
-                "resp_distress","ext_bleed","pelvic_unstable",
-                "hypothermia","burns","pupils"]:
+    for key in FEATURE_KEYS:
         if key in SIM_WEIGHTS:
             d += SIM_WEIGHTS[key] * (0 if q.get(key) == c.get(key) else 1)
     return d
@@ -469,21 +486,31 @@ def retrieve_top_k(query_facts, k=3):
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[:k]
 
-def feature_match_summary(query_facts, case):
-    lines = []
-    for key in CBR_KEYS:
-        qv = query_facts.get(key)
-        cv = case.get(key)
-        if qv == cv:
-            lines.append(f"✅ {key}: {qv}")
+def explain_match(query_facts, case):
+    """Return lists of matching and differing features between query and case."""
+    matches = []
+    diffs = []
+    # treat sbp/gcs as "match-ish" if close
+    if abs(query_facts["sbp"] - case["sbp"]) <= 10:
+        matches.append("sbp")
+    else:
+        diffs.append("sbp")
+    if abs(query_facts["gcs"] - case["gcs"]) <= 2:
+        matches.append("gcs")
+    else:
+        diffs.append("gcs")
+
+    for key in FEATURE_KEYS:
+        if query_facts.get(key) == case.get(key):
+            matches.append(key)
         else:
-            lines.append(f"▫️ {key}: query={qv}, case={cv}")
-    return "\n".join(lines)
+            diffs.append(key)
+    return matches, diffs
 
 # -------------------------------
 # Streamlit UI
 # -------------------------------
-st.set_page_config(page_title="ATLS Tutor (Gemini + Python Rules + CBR)", layout="wide")
+st.set_page_config(page_title="ATLS Tutor (Gemini + Python Rules)", layout="wide")
 st.title("🩺 ATLS Primary Survey Tutor (Gemini + Python Rules + CBR)")
 
 st.caption("Educational demo — not for clinical use.")
@@ -527,24 +554,14 @@ if st.button("Run ATLS Tutor"):
         st.write("No cases in case base yet.")
     else:
         for sim, case in neighbors:
+            matches, diffs = explain_match(facts, case)
             st.markdown(
                 f"**Case {case['id']}: {case['label']}**  \n"
                 f"Similarity: `{sim:.2f}`  \n"
                 f"_Stored plan_: {', '.join(case['actions'])}"
             )
-            with st.expander("Feature comparison"):
-                st.markdown(feature_match_summary(facts, case))
-
-    # --- Comparison of rule plan vs CBR plan (from top case) ---
-    if neighbors:
-        rule_actions = [a for (a, _) in actions]
-        cbr_actions = neighbors[0][1]["actions"]
-        st.subheader("Rule Plan vs CBR Plan (Top Case)")
-        st.markdown("**Rule-based actions:** " + "; ".join(rule_actions))
-        st.markdown("**CBR actions (top case):** " + "; ".join(cbr_actions))
-
-        overlap = set(rule_actions) & set(cbr_actions)
-        if overlap:
-            st.markdown("**Overlap:** " + "; ".join(overlap))
-        else:
-            st.markdown("_No exact text overlap, but plans may still be clinically consistent._")
+            st.markdown(
+                f"<small>Matching features: {', '.join(matches) or 'none'}<br>"
+                f"Differing features: {', '.join(diffs) or 'none'}</small>",
+                unsafe_allow_html=True
+            )
