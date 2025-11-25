@@ -1,8 +1,11 @@
 import os
 import json
 import re
+import numpy as np
 import streamlit as st
 import google.generativeai as genai
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
 
 # --------------------------
 # MODEL TRY-ORDER (newest -> older)
@@ -52,11 +55,12 @@ def call_gemini(note: str) -> dict:
     raise RuntimeError(f"Gemini call failed. Last error: {last_err}")
 
 # --------------------------
-# Minimal regex fallback if LLM fails (keeps the app usable)
+# Regex fallback if LLM fails
 # --------------------------
 def regex_extract(note: str) -> dict:
     t = note.lower()
     def yesif(pat): return "yes" if re.search(pat, t) else "no"
+
     airway = "unknown"
     if re.search(r'\bobstruct(ed|ion)?\b|snoring|gurgling|stridor', t):
         airway = "obstructed"
@@ -97,7 +101,22 @@ def regex_extract(note: str) -> dict:
         "burns": yesif(r'\bburn(s)?\b|inhalation injury'),
     }
 
-def normalize(d: dict) -> dict:
+# --- helpers for extra features (for CBR) ---
+def infer_mechanism(note: str) -> str:
+    t = note.lower()
+    if re.search(r'gsw|gunshot|firearm', t): return "gsw"
+    if re.search(r'mvc|mva|car crash|motor vehicle|high-speed', t): return "mvc"
+    if re.search(r'fall|fell|fall from', t): return "fall"
+    if re.search(r'fire|burn|smoke inhalation|house fire', t): return "fire"
+    return "other"
+
+def infer_age_group(note: str) -> str:
+    t = note.lower()
+    if re.search(r'child|pediatric|yo male age 6|6-year-old|7-year-old|8-year-old', t): return "peds"
+    if re.search(r'elderly|frail|75-year-old|80-year-old|90-year-old', t): return "elderly"
+    return "adult"
+
+def normalize(d: dict, note: str) -> dict:
     def pick(x, allowed, default): return x if x in allowed else default
     out = {
         "airway": pick(d.get("airway","unknown"), {"patent","obstructed","compromised","unknown"}, "unknown"),
@@ -113,6 +132,9 @@ def normalize(d: dict) -> dict:
         "pupils": pick(d.get("pupils","unknown"), {"equal","unequal","unknown"}, "unknown"),
         "hypothermia": pick(d.get("hypothermia","no"), {"yes","no"}, "no"),
         "burns": pick(d.get("burns","no"), {"yes","no"}, "no"),
+        # extra features:
+        "mechanism": infer_mechanism(note),
+        "age_group": infer_age_group(note),
     }
     if out["airway"] == "unknown" and out["gcs"] <= 8:
         out["airway"] = "compromised"
@@ -202,13 +224,14 @@ def run_atls_engine(f):
     return actions
 
 # -----------------------------------
-# Case Base for CBR / kNN (10 illustrative cases)
+# Case Base for CBR / kNN (same fields + mechanism, age_group)
 # -----------------------------------
 CASE_BASE = [
-    # 1 – High-speed MVC with tension PTX and shock
     {
         "id": 1,
         "label": "High-speed MVC with tension PTX and shock",
+        "mechanism": "mvc",
+        "age_group": "adult",
         "airway": "compromised",
         "cspine": "yes",
         "tension_ptx": "yes",
@@ -230,10 +253,11 @@ CASE_BASE = [
             "Consider transfer"
         ]
     },
-    # 2 – GSW to thigh with massive hemorrhage
     {
         "id": 2,
         "label": "GSW to thigh with massive hemorrhage",
+        "mechanism": "gsw",
+        "age_group": "adult",
         "airway": "patent",
         "cspine": "unknown",
         "tension_ptx": "no",
@@ -254,10 +278,11 @@ CASE_BASE = [
             "Consider transfer"
         ]
     },
-    # 3 – Pelvic crush injury with hypotension
     {
         "id": 3,
         "label": "Pelvic crush injury with hypotension",
+        "mechanism": "other",
+        "age_group": "adult",
         "airway": "patent",
         "cspine": "unknown",
         "tension_ptx": "no",
@@ -278,10 +303,11 @@ CASE_BASE = [
             "Consider transfer"
         ]
     },
-    # 4 – Stable blunt trauma
     {
         "id": 4,
         "label": "Stable blunt trauma",
+        "mechanism": "mvc",
+        "age_group": "adult",
         "airway": "patent",
         "cspine": "no",
         "tension_ptx": "no",
@@ -301,10 +327,11 @@ CASE_BASE = [
             "Adjunct imaging as needed"
         ]
     },
-    # 5 – Burn + inhalation injury
     {
         "id": 5,
         "label": "House fire with burns and inhalation injury",
+        "mechanism": "fire",
+        "age_group": "adult",
         "airway": "compromised",
         "cspine": "unknown",
         "tension_ptx": "no",
@@ -325,10 +352,11 @@ CASE_BASE = [
             "Prevent hypothermia"
         ]
     },
-    # 6 – Elderly fall with hypothermia
     {
         "id": 6,
         "label": "Elderly fall with hypothermia",
+        "mechanism": "fall",
+        "age_group": "elderly",
         "airway": "patent",
         "cspine": "yes",
         "tension_ptx": "no",
@@ -349,10 +377,11 @@ CASE_BASE = [
             "Secondary survey"
         ]
     },
-    # 7 – Pediatric blunt trauma, stable
     {
         "id": 7,
         "label": "Pediatric blunt trauma, stable",
+        "mechanism": "mvc",
+        "age_group": "peds",
         "airway": "patent",
         "cspine": "no",
         "tension_ptx": "no",
@@ -372,10 +401,11 @@ CASE_BASE = [
             "Observation"
         ]
     },
-    # 8 – Flail chest without hypotension
     {
         "id": 8,
         "label": "Flail chest with respiratory distress",
+        "mechanism": "mvc",
+        "age_group": "adult",
         "airway": "patent",
         "cspine": "yes",
         "tension_ptx": "no",
@@ -395,10 +425,11 @@ CASE_BASE = [
             "Evaluate for underlying lung injury"
         ]
     },
-    # 9 – GSW chest with open pneumothorax
     {
         "id": 9,
         "label": "GSW chest with open pneumothorax",
+        "mechanism": "gsw",
+        "age_group": "adult",
         "airway": "patent",
         "cspine": "unknown",
         "tension_ptx": "no",
@@ -418,10 +449,11 @@ CASE_BASE = [
             "Monitor for shock"
         ]
     },
-    # 10 – Blunt head injury with unequal pupils
     {
         "id": 10,
         "label": "Blunt head injury with unequal pupils",
+        "mechanism": "mvc",
+        "age_group": "adult",
         "airway": "patent",
         "cspine": "yes",
         "tension_ptx": "no",
@@ -456,13 +488,16 @@ SIM_WEIGHTS = {
     "hypothermia": 1.0,
     "burns": 1.0,
     "pupils": 1.0,
+    "mechanism": 1.5,
+    "age_group": 1.0,
     "sbp": 1.0,
     "gcs": 1.0,
 }
 
 FEATURE_KEYS = [
     "airway","cspine","tension_ptx","open_ptx","flail","resp_distress",
-    "ext_bleed","pelvic_unstable","hypothermia","burns","pupils"
+    "ext_bleed","pelvic_unstable","hypothermia","burns","pupils",
+    "mechanism","age_group"
 ]
 
 def case_distance(q, c):
@@ -507,6 +542,45 @@ def explain_match(query_facts, case):
             diffs.append(key)
     return matches, diffs
 
+# ---------- PCA visualization helpers ----------
+CAT_MAPS = {
+    "airway":       {"patent":0,"compromised":1,"obstructed":2,"unknown":3},
+    "cspine":       {"no":0,"yes":1,"unknown":2},
+    "tension_ptx":  {"no":0,"yes":1},
+    "open_ptx":     {"no":0,"yes":1},
+    "flail":        {"no":0,"yes":1},
+    "resp_distress":{"no":0,"yes":1},
+    "ext_bleed":    {"no":0,"yes":1},
+    "pelvic_unstable":{"no":0,"yes":1},
+    "hypothermia":  {"no":0,"yes":1},
+    "burns":        {"no":0,"yes":1},
+    "pupils":       {"equal":0,"unequal":1,"unknown":2},
+    "mechanism":    {"mvc":0,"gsw":1,"fall":2,"fire":3,"other":4},
+    "age_group":    {"peds":0,"adult":1,"elderly":2},
+}
+
+def vectorize_case(c):
+    v = [float(c["sbp"]), float(c["gcs"])]
+    for key in FEATURE_KEYS:
+        m = CAT_MAPS[key]
+        v.append(float(m.get(c.get(key,"unknown"), max(m.values())+1)))
+    return np.array(v, dtype=float)
+
+def get_pca_embedding(query_facts):
+    # build matrix: all cases + query
+    X = []
+    labels = []
+    for case in CASE_BASE:
+        X.append(vectorize_case(case))
+        labels.append(f"Case {case['id']}")
+    # query as 'Case 0'
+    X.append(vectorize_case(query_facts))
+    labels.append("Query")
+    X = np.vstack(X)
+    pca = PCA(n_components=2)
+    coords = pca.fit_transform(X)
+    return coords, labels
+
 # -------------------------------
 # Streamlit UI
 # -------------------------------
@@ -533,7 +607,7 @@ if st.button("Run ATLS Tutor"):
             st.warning(f"Gemini error, using local fallback: {e}")
             raw = regex_extract(note)
 
-    facts = normalize(raw)
+    facts = normalize(raw, note)
 
     st.subheader("Extracted Facts (normalized)")
     st.json(facts)
@@ -565,3 +639,21 @@ if st.button("Run ATLS Tutor"):
                 f"Differing features: {', '.join(diffs) or 'none'}</small>",
                 unsafe_allow_html=True
             )
+
+    # --- PCA view of case base + query ---
+    with st.expander("Show PCA map of case base (for CBR analysis)"):
+        coords, labels = get_pca_embedding(facts)
+        fig, ax = plt.subplots()
+        xs = coords[:-1,0]
+        ys = coords[:-1,1]
+        ax.scatter(xs, ys, c="tab:blue", label="Case base")
+        ax.scatter(coords[-1,0], coords[-1,1], c="red", marker="X", s=100, label="Query")
+
+        for i, lab in enumerate(labels[:-1]):  # label cases lightly
+            ax.annotate(lab.split()[1], (xs[i]+0.02, ys[i]+0.02), fontsize=8, color="gray")
+
+        ax.set_xlabel("PC1")
+        ax.set_ylabel("PC2")
+        ax.set_title("PCA Embedding of Trauma Cases + Query")
+        ax.legend()
+        st.pyplot(fig)
