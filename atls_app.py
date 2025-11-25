@@ -60,6 +60,7 @@ def regex_extract(note: str) -> dict:
     airway = "unknown"
     if re.search(r'\bobstruct|snoring|gurgling|stridor', t): airway = "obstructed"
     elif re.search(r'vomit|blood in airway|facial fracture|soot|burn airway', t): airway = "compromised"
+    elif re.search(r'speaking|talking|answering', t): airway = "patent"
     cspine = "yes" if re.search(r'c[-\s]?spine|cervical|midline neck tender|high[-\s]?speed|mvc|mva|fall|dive', t) else "unknown"
     sbp = 120
     m = re.search(r'\bsbp\s*[:=]?\s*(\d+)', t) or re.search(r'\bbp\s*[:=]?\s*(\d+)\s*/', t)
@@ -191,7 +192,7 @@ def run_atls_engine(f):
     return actions
 
 # -----------------------------------
-# Case Base for CBR / kNN
+# Case Base for CBR / kNN  (10 cases)
 # -----------------------------------
 CASE_BASE = [
     {
@@ -308,6 +309,118 @@ CASE_BASE = [
             "Manage burns",
             "Prevent hypothermia"
         ]
+    },
+    {
+        "id": 6,
+        "label": "Open pneumothorax from stab wound",
+        "airway": "patent",
+        "cspine": "unknown",
+        "tension_ptx": "no",
+        "open_ptx": "yes",
+        "flail": "no",
+        "resp_distress": "yes",
+        "sbp": 100,
+        "ext_bleed": "no",
+        "pelvic_unstable": "no",
+        "gcs": 15,
+        "pupils": "equal",
+        "hypothermia": "no",
+        "burns": "no",
+        "actions": [
+            "3-sided occlusive dressing",
+            "Chest tube",
+            "Oxygen",
+            "Monitor hemodynamics"
+        ]
+    },
+    {
+        "id": 7,
+        "label": "Flail chest from blunt trauma",
+        "airway": "patent",
+        "cspine": "yes",
+        "tension_ptx": "no",
+        "open_ptx": "no",
+        "flail": "yes",
+        "resp_distress": "yes",
+        "sbp": 110,
+        "ext_bleed": "no",
+        "pelvic_unstable": "no",
+        "gcs": 14,
+        "pupils": "equal",
+        "hypothermia": "no",
+        "burns": "no",
+        "actions": [
+            "Analgesia",
+            "Consider positive pressure ventilation",
+            "Oxygen"
+        ]
+    },
+    {
+        "id": 8,
+        "label": "Hypothermic elderly fall",
+        "airway": "patent",
+        "cspine": "unknown",
+        "tension_ptx": "no",
+        "open_ptx": "no",
+        "flail": "no",
+        "resp_distress": "no",
+        "sbp": 120,
+        "ext_bleed": "no",
+        "pelvic_unstable": "no",
+        "gcs": 15,
+        "pupils": "equal",
+        "hypothermia": "yes",
+        "burns": "no",
+        "actions": [
+            "Warm blankets",
+            "Warmed IV fluids",
+            "Prevent further heat loss"
+        ]
+    },
+    {
+        "id": 9,
+        "label": "PEA arrest from tension PTX",
+        "airway": "compromised",
+        "cspine": "unknown",
+        "tension_ptx": "yes",
+        "open_ptx": "no",
+        "flail": "no",
+        "resp_distress": "yes",
+        "sbp": 60,
+        "ext_bleed": "no",
+        "pelvic_unstable": "no",
+        "gcs": 3,
+        "pupils": "unequal",
+        "hypothermia": "no",
+        "burns": "no",
+        "actions": [
+            "Immediate decompression",
+            "CPR/ALS as appropriate",
+            "Definitive airway"
+        ]
+    },
+    {
+        "id": 10,
+        "label": "Gunshot to chest with shock and open PTX",
+        "airway": "patent",
+        "cspine": "unknown",
+        "tension_ptx": "no",
+        "open_ptx": "yes",
+        "flail": "no",
+        "resp_distress": "yes",
+        "sbp": 75,
+        "ext_bleed": "yes",
+        "pelvic_unstable": "no",
+        "gcs": 13,
+        "pupils": "equal",
+        "hypothermia": "no",
+        "burns": "no",
+        "actions": [
+            "3-sided dressing",
+            "Chest tube",
+            "IV access + blood",
+            "Consider transfer"
+        ]
     }
 ]
 
@@ -327,6 +440,11 @@ SIM_WEIGHTS = {
     "sbp": 1.0,
     "gcs": 1.0,
 }
+
+CBR_KEYS = [
+    "airway","cspine","tension_ptx","open_ptx","flail","resp_distress",
+    "sbp","ext_bleed","pelvic_unstable","gcs","pupils","hypothermia","burns"
+]
 
 def case_distance(q, c):
     d = 0.0
@@ -351,10 +469,21 @@ def retrieve_top_k(query_facts, k=3):
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[:k]
 
+def feature_match_summary(query_facts, case):
+    lines = []
+    for key in CBR_KEYS:
+        qv = query_facts.get(key)
+        cv = case.get(key)
+        if qv == cv:
+            lines.append(f"✅ {key}: {qv}")
+        else:
+            lines.append(f"▫️ {key}: query={qv}, case={cv}")
+    return "\n".join(lines)
+
 # -------------------------------
 # Streamlit UI
 # -------------------------------
-st.set_page_config(page_title="ATLS Tutor (Gemini + Python Rules)", layout="wide")
+st.set_page_config(page_title="ATLS Tutor (Gemini + Python Rules + CBR)", layout="wide")
 st.title("🩺 ATLS Primary Survey Tutor (Gemini + Python Rules + CBR)")
 
 st.caption("Educational demo — not for clinical use.")
@@ -403,3 +532,19 @@ if st.button("Run ATLS Tutor"):
                 f"Similarity: `{sim:.2f}`  \n"
                 f"_Stored plan_: {', '.join(case['actions'])}"
             )
+            with st.expander("Feature comparison"):
+                st.markdown(feature_match_summary(facts, case))
+
+    # --- Comparison of rule plan vs CBR plan (from top case) ---
+    if neighbors:
+        rule_actions = [a for (a, _) in actions]
+        cbr_actions = neighbors[0][1]["actions"]
+        st.subheader("Rule Plan vs CBR Plan (Top Case)")
+        st.markdown("**Rule-based actions:** " + "; ".join(rule_actions))
+        st.markdown("**CBR actions (top case):** " + "; ".join(cbr_actions))
+
+        overlap = set(rule_actions) & set(cbr_actions)
+        if overlap:
+            st.markdown("**Overlap:** " + "; ".join(overlap))
+        else:
+            st.markdown("_No exact text overlap, but plans may still be clinically consistent._")
