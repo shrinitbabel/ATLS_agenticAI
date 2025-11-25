@@ -23,7 +23,6 @@ def configure_genai():
     api_key = get_gemini_api_key()
     if not api_key:
         raise RuntimeError("No Gemini API key found. Set st.secrets['GOOGLE_API_KEY'] or env var GOOGLE_API_KEY.")
-    # No api_endpoint kwarg (not supported by your SDK)
     genai.configure(api_key=api_key)
 
 def call_gemini(note: str) -> dict:
@@ -109,8 +108,6 @@ def normalize(d: dict) -> dict:
 
 # -----------------------------------
 # Python rules engine (forward-chaining)
-# Salience: higher first.
-# We emit (action, why) tuples in order fired.
 # -----------------------------------
 def run_atls_engine(f):
     actions = []
@@ -187,18 +184,178 @@ def run_atls_engine(f):
         fire("SECONDARY SURVEY: Head-to-toe exam & adjuncts once immediate threats addressed.",
              "Stable enough to proceed to secondary survey")
     else:
-        # If any life threat persists or unstable hemodynamics
         if f["sbp"] < 90 or f["tension_ptx"] == "yes" or f["airway"] == "obstructed":
             fire("CONSIDER TRANSFER: If resources limited or persistent instability, prepare rapid transfer to trauma center.",
                  "Persistent life threat or resource needs")
 
     return actions
 
+# -----------------------------------
+# Case Base for CBR / kNN
+# -----------------------------------
+CASE_BASE = [
+    {
+        "id": 1,
+        "label": "High-speed MVC with tension PTX and shock",
+        "airway": "compromised",
+        "cspine": "yes",
+        "tension_ptx": "yes",
+        "open_ptx": "no",
+        "flail": "no",
+        "resp_distress": "yes",
+        "sbp": 80,
+        "ext_bleed": "no",
+        "pelvic_unstable": "no",
+        "gcs": 6,
+        "pupils": "equal",
+        "hypothermia": "no",
+        "burns": "no",
+        "actions": [
+            "RSI airway",
+            "Needle decompression",
+            "Chest tube",
+            "IV access + blood",
+            "Consider transfer"
+        ]
+    },
+    {
+        "id": 2,
+        "label": "GSW to thigh with massive hemorrhage",
+        "airway": "patent",
+        "cspine": "unknown",
+        "tension_ptx": "no",
+        "open_ptx": "no",
+        "flail": "no",
+        "resp_distress": "no",
+        "sbp": 70,
+        "ext_bleed": "yes",
+        "pelvic_unstable": "no",
+        "gcs": 14,
+        "pupils": "equal",
+        "hypothermia": "no",
+        "burns": "no",
+        "actions": [
+            "Direct pressure / tourniquet",
+            "IV access + blood",
+            "Monitor for shock",
+            "Consider transfer"
+        ]
+    },
+    {
+        "id": 3,
+        "label": "Pelvic crush injury with hypotension",
+        "airway": "patent",
+        "cspine": "unknown",
+        "tension_ptx": "no",
+        "open_ptx": "no",
+        "flail": "no",
+        "resp_distress": "no",
+        "sbp": 85,
+        "ext_bleed": "no",
+        "pelvic_unstable": "yes",
+        "gcs": 13,
+        "pupils": "equal",
+        "hypothermia": "no",
+        "burns": "no",
+        "actions": [
+            "Pelvic binder",
+            "IV access + blood",
+            "Assess for pelvic hemorrhage",
+            "Consider transfer"
+        ]
+    },
+    {
+        "id": 4,
+        "label": "Stable blunt trauma",
+        "airway": "patent",
+        "cspine": "no",
+        "tension_ptx": "no",
+        "open_ptx": "no",
+        "flail": "no",
+        "resp_distress": "no",
+        "sbp": 120,
+        "ext_bleed": "no",
+        "pelvic_unstable": "no",
+        "gcs": 15,
+        "pupils": "equal",
+        "hypothermia": "no",
+        "burns": "no",
+        "actions": [
+            "Complete primary survey",
+            "Secondary survey",
+            "Adjunct imaging as needed"
+        ]
+    },
+    {
+        "id": 5,
+        "label": "Burn + inhalation injury",
+        "airway": "compromised",
+        "cspine": "unknown",
+        "tension_ptx": "no",
+        "open_ptx": "no",
+        "flail": "no",
+        "resp_distress": "yes",
+        "sbp": 110,
+        "ext_bleed": "no",
+        "pelvic_unstable": "no",
+        "gcs": 14,
+        "pupils": "equal",
+        "hypothermia": "no",
+        "burns": "yes",
+        "actions": [
+            "Early airway protection",
+            "Oxygen",
+            "Manage burns",
+            "Prevent hypothermia"
+        ]
+    }
+]
+
+# weights for similarity (higher = more important)
+SIM_WEIGHTS = {
+    "airway": 2.0,
+    "cspine": 0.5,
+    "tension_ptx": 3.0,
+    "open_ptx": 3.0,
+    "flail": 1.0,
+    "resp_distress": 1.0,
+    "ext_bleed": 3.0,
+    "pelvic_unstable": 2.0,
+    "hypothermia": 0.5,
+    "burns": 0.5,
+    "pupils": 0.5,
+    "sbp": 1.0,
+    "gcs": 1.0,
+}
+
+def case_distance(q, c):
+    d = 0.0
+    # numeric distances (normalize roughly)
+    d += SIM_WEIGHTS["sbp"] * (abs(q["sbp"] - c["sbp"]) / 40.0)
+    d += SIM_WEIGHTS["gcs"] * (abs(q["gcs"] - c["gcs"]) / 15.0)
+
+    # categorical mismatch penalties
+    for key in ["airway","cspine","tension_ptx","open_ptx","flail",
+                "resp_distress","ext_bleed","pelvic_unstable",
+                "hypothermia","burns","pupils"]:
+        if key in SIM_WEIGHTS:
+            d += SIM_WEIGHTS[key] * (0 if q.get(key) == c.get(key) else 1)
+    return d
+
+def retrieve_top_k(query_facts, k=3):
+    scored = []
+    for c in CASE_BASE:
+        dist = case_distance(query_facts, c)
+        sim = 1.0 / (1.0 + dist)   # convert distance -> similarity in (0,1]
+        scored.append((sim, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[:k]
+
 # -------------------------------
 # Streamlit UI
 # -------------------------------
 st.set_page_config(page_title="ATLS Tutor (Gemini + Python Rules)", layout="wide")
-st.title("🩺 ATLS Primary Survey Tutor (Gemini + Python Rules)")
+st.title("🩺 ATLS Primary Survey Tutor (Gemini + Python Rules + CBR)")
 
 st.caption("Educational demo — not for clinical use.")
 
@@ -219,7 +376,7 @@ if st.button("Run ATLS Tutor"):
         except Exception as e:
             st.warning(f"Gemini error, using local fallback: {e}")
             raw = regex_extract(note)
-            
+
     facts = normalize(raw)
 
     st.subheader("Extracted Facts (normalized)")
@@ -228,6 +385,21 @@ if st.button("Run ATLS Tutor"):
     with st.spinner("Reasoning with ATLS rules..."):
         actions = run_atls_engine(facts)
 
-    st.subheader("Recommendations")
+    st.subheader("Rule-Based Recommendations")
     for i, (act, why) in enumerate(actions, 1):
         st.markdown(f"**{i}. {act}**  \n<small>_because: {why}_</small>", unsafe_allow_html=True)
+
+    # --- CBR / kNN retrieval ---
+    with st.spinner("Retrieving similar past cases (CBR)..."):
+        neighbors = retrieve_top_k(facts, k=3)
+
+    st.subheader("Most Similar Past Cases (Case-Based Reasoning)")
+    if not neighbors:
+        st.write("No cases in case base yet.")
+    else:
+        for sim, case in neighbors:
+            st.markdown(
+                f"**Case {case['id']}: {case['label']}**  \n"
+                f"Similarity: `{sim:.2f}`  \n"
+                f"_Stored plan_: {', '.join(case['actions'])}"
+            )
