@@ -522,10 +522,8 @@ def retrieve_top_k(query_facts, k=3):
     return scored[:k]
 
 def explain_match(query_facts, case):
-    """Return lists of matching and differing features between query and case."""
     matches = []
     diffs = []
-    # treat sbp/gcs as "match-ish" if close
     if abs(query_facts["sbp"] - case["sbp"]) <= 10:
         matches.append("sbp")
     else:
